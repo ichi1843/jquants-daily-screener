@@ -20,7 +20,7 @@ def send_discord_notify(message):
     requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
 
 def main():
-    print("🚀 スクリーニング開始（V2カラム名 IS 修正版）")
+    print("🚀 スクリーニング開始（株価×マスタ×財務情報の3点結合版）")
 
     con = duckdb.connect(database=':memory:')
     con.execute("INSTALL httpfs; LOAD httpfs;")
@@ -34,36 +34,48 @@ def main():
     """)
 
     try:
-        # 1. 最新の銘柄マスタファイルを1つだけ特定
-        print("🔍 最新の銘柄マスタを探索中...")
-        master_files = con.sql(f"SELECT file FROM glob('s3://{BUCKET_NAME}/raw/equities_master/**/*.parquet') ORDER BY file DESC LIMIT 1").df()
-        
-        if master_files.empty:
-            raise Exception("銘柄マスタファイルが見つかりません。")
-        
-        latest_master_path = master_files.iloc[0]['file']
-        print(f"📍 使用するマスタ: {latest_master_path}")
-
-        # 2. データの取得
-        print("📥 株価データを読み込み中...")
+        # 1. パスの設定
         quotes_path = f"s3://{BUCKET_NAME}/raw/daily_quotes/**/*.parquet"
+        master_path = f"s3://{BUCKET_NAME}/raw/equities_master/**/*.parquet"
+        fins_path = f"s3://{BUCKET_NAME}/raw/fins_summary/**/*.parquet"
 
-        # SQL修正箇所: m.IssuedShares -> m.IS (V2仕様)
+        print("🔍 3種類のデータを読み込み、時価総額を計算中...")
+
+        # SQLのポイント: 
+        # - LatestShares: 財務情報から「最新の」発行済株式数(ShOutFY)を取得
+        # - base: 最新株価(C) と 発行済株式数 を掛け合わせて時価総額を算出
         df_all = con.sql(f"""
+            WITH LatestShares AS (
+                -- 銘柄ごとに最新の財務情報の行だけを抽出
+                SELECT 
+                    Code, 
+                    CAST(NULLIF(ShOutFY, '') AS DOUBLE) as IssuedShares
+                FROM read_parquet('{fins_path}')
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY Code ORDER BY DisCloseDate DESC) = 1
+            ),
+            LatestMaster AS (
+                -- 銘柄マスタも最新の1ファイル分だけ使用
+                SELECT 
+                    Code, 
+                    CoName AS CompanyName 
+                FROM read_parquet('{master_path}')
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY Code ORDER BY Date DESC) = 1
+            )
             SELECT 
                 CAST(q.Date AS DATE) as Date, 
                 q.Code, 
                 q.C,
-                m.CoName AS CompanyName,
-                (q.C * CAST(m.IS AS DOUBLE)) as MarketCap
+                m.CompanyName,
+                (q.C * s.IssuedShares) as MarketCap
             FROM read_parquet('{quotes_path}') q
-            INNER JOIN read_parquet('{latest_master_path}') m ON q.Code = m.Code
+            INNER JOIN LatestShares s ON q.Code = s.Code
+            LEFT JOIN LatestMaster m ON q.Code = m.Code
             WHERE CAST(q.Date AS DATE) >= (CURRENT_DATE - INTERVAL 40 DAY)
             ORDER BY q.Code, q.Date
         """).df()
 
         if df_all.empty:
-            send_discord_notify("✅ 条件に合うデータ（直近40日以内）がありませんでした。")
+            send_discord_notify("✅ 条件に合う基礎データがR2内に見つかりませんでした。")
             return
 
         print(f"🔍 分析対象：{df_all['Code'].nunique()} 銘柄")
@@ -72,7 +84,7 @@ def main():
         for code, group in df_all.groupby('Code'):
             if len(group) < 15: continue
             
-            # RSI計算
+            # RSI(14)計算
             rsi_series = ta.rsi(group['C'], length=14)
             if rsi_series is None or rsi_series.empty: continue
             
@@ -105,7 +117,7 @@ def main():
             msg = f"✅ {df_all['Date'].max().strftime('%Y-%m-%d')} : 条件に合致する銘柄はありませんでした。"
 
         send_discord_notify(msg)
-        print("✅ 完了")
+        print("✅ 全工程完了")
 
     except Exception as e:
         error_details = str(e)
