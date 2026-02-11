@@ -20,7 +20,7 @@ def send_discord_notify(message):
     requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
 
 def main():
-    print("🚀 スクリーニング開始（カラム名 DiscloseDate 修正版）")
+    print("🚀 スクリーニング開始（カラム名 DisCloseTime 修正版）")
 
     con = duckdb.connect(database=':memory:')
     con.execute("INSTALL httpfs; LOAD httpfs;")
@@ -41,17 +41,16 @@ def main():
 
         print("🔍 3種類のデータを読み込み、時価総額を計算中...")
 
-        # SQLの修正ポイント: 
-        # - DiscloseDate (cが小文字) を使用
-        # - NULLIF と CAST を組み合わせて数値変換を確実に
+        # SQL修正ポイント:
+        # あなたのデータ構造に合わせて ORDER BY DisCloseTime に修正しました
         df_all = con.sql(f"""
             WITH LatestShares AS (
                 SELECT 
                     Code, 
                     CAST(NULLIF(ShOutFY, '') AS DOUBLE) as IssuedShares
                 FROM read_parquet('{fins_path}')
-                -- DiscloseDate (J-Quants V2の標準名) で最新を取得
-                QUALIFY ROW_NUMBER() OVER (PARTITION BY Code ORDER BY DiscloseDate DESC) = 1
+                -- 最新の財務データを特定するために DisCloseTime を使用
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY Code ORDER BY DisCloseTime DESC) = 1
             ),
             LatestMaster AS (
                 SELECT 
@@ -74,7 +73,7 @@ def main():
         """).df()
 
         if df_all.empty:
-            send_discord_notify("✅ スクリーニング対象のデータがR2内に見つかりませんでした。")
+            send_discord_notify("✅ 条件に合うデータがR2内に見つかりませんでした。")
             return
 
         print(f"🔍 分析対象：{df_all['Code'].nunique()} 銘柄")
