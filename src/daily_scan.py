@@ -20,7 +20,7 @@ def send_discord_notify(message):
     requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
 
 def main():
-    print("🚀 スクリーニング開始（カラム名 DisCloseTime 修正版）")
+    print("🚀 スクリーニング開始（最新V2リファレンス完全準拠版）")
 
     con = duckdb.connect(database=':memory:')
     con.execute("INSTALL httpfs; LOAD httpfs;")
@@ -41,22 +41,25 @@ def main():
 
         print("🔍 3種類のデータを読み込み、時価総額を計算中...")
 
-        # SQL修正ポイント:
-        # あなたのデータ構造に合わせて ORDER BY DisCloseTime に修正しました
+        # SQL修正ポイント（ご提示のリファレンスに完全準拠）:
+        # - fins_summary: 開示日は 'DiscDate'、発行済株式数は 'ShOutFY'
+        # - equities_master: 会社名は 'CoName'、適用日は 'Date'
+        # - daily_quotes: 日付は 'Date'、終値は 'C'
         df_all = con.sql(f"""
             WITH LatestShares AS (
                 SELECT 
                     Code, 
                     CAST(NULLIF(ShOutFY, '') AS DOUBLE) as IssuedShares
                 FROM read_parquet('{fins_path}')
-                -- 最新の財務データを特定するために DisCloseTime を使用
-                QUALIFY ROW_NUMBER() OVER (PARTITION BY Code ORDER BY DisCloseTime DESC) = 1
+                -- リファレンスに基づき 'DiscDate' で最新を特定
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY Code ORDER BY DiscDate DESC) = 1
             ),
             LatestMaster AS (
                 SELECT 
                     Code, 
                     CoName AS CompanyName 
                 FROM read_parquet('{master_path}')
+                -- リファレンスに基づき 'Date' で最新を特定
                 QUALIFY ROW_NUMBER() OVER (PARTITION BY Code ORDER BY Date DESC) = 1
             )
             SELECT 
@@ -73,10 +76,10 @@ def main():
         """).df()
 
         if df_all.empty:
-            send_discord_notify("✅ 条件に合うデータがR2内に見つかりませんでした。")
+            send_discord_notify("✅ スクリーニング対象のデータがR2内に見つかりませんでした。")
             return
 
-        print(f"🔍 分析対象：{df_all['Code'].nunique()} 銘柄")
+        print(f"🔍 分析対象：{df_all['Code'].nunique()} 銘銘柄")
 
         result_list = []
         for code, group in df_all.groupby('Code'):
