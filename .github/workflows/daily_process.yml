@@ -1,0 +1,46 @@
+name: J-Quants Daily Screener
+
+on:
+  # 1. 毎日 18:30 (JST) に自動実行
+  # UTC 09:30 = JST 18:30
+  schedule:
+    - cron: '30 9 * * *'
+
+  # 2. 手動実行ボタン（テスト用）
+  workflow_dispatch:
+
+jobs:
+  run-analysis:
+    runs-on: ubuntu-latest
+    
+    # 30分で強制終了させる安全装置
+    timeout-minutes: 30
+
+    steps:
+      # リポジトリのコードを取得
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Python 3.10 をセットアップ
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # ライブラリのインストール
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # メインのスクリプトを実行
+      - name: Run analysis script
+        env:
+          # GitHub Secrets の値を環境変数として渡す
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python src/daily_scan.py
