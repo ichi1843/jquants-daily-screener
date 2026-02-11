@@ -2,7 +2,7 @@ import os
 import duckdb
 import requests
 import pandas as pd
-import pandas_ta as ta  # テクニカル分析用
+import pandas_ta as ta
 import datetime
 
 # --- 設定 ---
@@ -16,12 +16,11 @@ ENDPOINT_DOMAIN = f"{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
 def send_discord_notify(message):
     if not DISCORD_WEBHOOK_URL: return
-    # Discordの文字数制限(2000文字)対策
     if len(message) > 1900: message = message[:1900] + "\n...(省略)"
     requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
 
 def main():
-    print("🚀 スクリーニングを開始します（条件：時価総額300億以下 & RSI30以下）")
+    print("🚀 スクリーニング開始（メモリ最適化版）")
 
     con = duckdb.connect(database=':memory:')
     con.execute("INSTALL httpfs; LOAD httpfs;")
@@ -35,81 +34,85 @@ def main():
     """)
 
     try:
-        # 1. 過去40日分の株価と銘柄マスタを結合して取得
-        # RSI(14)を計算するため、最低でも20〜30日分の連続したデータが必要です
-        print("📥 データを読み込み中...")
+        # 1. 最新の銘柄マスタファイルを1つだけ特定する（重複防止）
+        print("🔍 最新の銘柄マスタを探索中...")
+        master_files = con.sql(f"SELECT name FROM glob('s3://{BUCKET_NAME}/raw/equities_master/**/*.parquet') ORDER BY name DESC LIMIT 1").df()
         
-        # パス設定
-        quotes_path = f"s3://{BUCKET_NAME}/raw/daily_quotes/**/*.parquet"
-        master_path = f"s3://{BUCKET_NAME}/raw/equities_master/**/*.parquet"
+        if master_files.empty:
+            raise Exception("銘柄マスタファイルが見つかりません。")
+        
+        latest_master_path = master_files.iloc[0]['name']
+        print(f"📍 使用するマスタ: {latest_master_path}")
 
-        # DuckDBで時価総額を計算しつつデータを抽出
-        # 時価総額 = 終値(C) * 発行済株式数(IssuedShares)
+        # 2. 直近40日分の株価だけを読み込む（メモリ節約）
+        print("📥 株価データを読み込み中...")
+        quotes_path = f"s3://{BUCKET_NAME}/raw/daily_quotes/**/*.parquet"
+
+        # SQLの修正ポイント:
+        # - IssuedShares が文字列として保存されている可能性があるため CAST する
+        # - master を最新の1ファイルに固定して結合
         df_all = con.sql(f"""
-            WITH base AS (
-                SELECT 
-                    q.Date, 
-                    q.Code, 
-                    q.C,
-                    m.CompanyName,
-                    (q.C * CAST(m.IssuedShares AS LLONG)) as MarketCap
-                FROM read_parquet('{quotes_path}') q
-                LEFT JOIN read_parquet('{master_path}') m ON q.Code = m.Code
-                WHERE q.Date >= (CURRENT_DATE - INTERVAL 40 DAY)
-            )
-            SELECT * FROM base 
-            WHERE MarketCap <= 30000000000 -- 300億円以下
-            ORDER BY Code, Date
+            SELECT 
+                CAST(q.Date AS DATE) as Date, 
+                q.Code, 
+                q.C,
+                m.CompanyName,
+                (q.C * CAST(m.IssuedShares AS DOUBLE)) as MarketCap
+            FROM read_parquet('{quotes_path}') q
+            INNER JOIN read_parquet('{latest_master_path}') m ON q.Code = m.Code
+            WHERE CAST(q.Date AS DATE) >= (CURRENT_DATE - INTERVAL 40 DAY)
+            ORDER BY q.Code, q.Date
         """).df()
 
         if df_all.empty:
-            send_discord_notify("⚠️ 条件に合う銘柄（時価総額300億以下）が見つかりませんでした。")
+            send_discord_notify("✅ 条件に合うデータがR2内にありませんでした。")
             return
 
         print(f"🔍 分析対象：{df_all['Code'].nunique()} 銘柄")
 
-        # 2. RSIを計算してフィルタリング
         result_list = []
         for code, group in df_all.groupby('Code'):
-            if len(group) < 15: continue  # データ不足はスキップ
+            if len(group) < 15: continue
             
-            # RSI(14)を計算
+            # RSI計算
             rsi_series = ta.rsi(group['C'], length=14)
             if rsi_series is None or rsi_series.empty: continue
             
             latest_rsi = rsi_series.iloc[-1]
             latest_price = group['C'].iloc[-1]
             latest_mcap = group['MarketCap'].iloc[-1]
-            latest_name = group['CompanyName'].iloc[-1]
+            latest_name = str(group['CompanyName'].iloc[-1]) if group['CompanyName'].iloc[-1] else str(code)
             
-            # RSIが30以下のものを抽出
-            if latest_rsi <= 30:
+            # 条件判定
+            if latest_mcap <= 30000000000 and latest_rsi <= 30:
                 result_list.append({
                     "Code": code,
-                    "Name": latest_name[:10], # 10文字に短縮
-                    "Price": latest_price,
+                    "Name": latest_name[:10],
+                    "Price": int(latest_price),
                     "M-Cap": f"{latest_mcap/100000000:.1f}億",
                     "RSI": round(latest_rsi, 1)
                 })
 
-        # 3. 結果の通知
+        # 3. 通知
         if result_list:
             res_df = pd.DataFrame(result_list).sort_values("RSI")
             msg = (
                 "**🔥 【逆張りチャンス】小型株×RSI30以下 **\n"
-                f"取得日: {df_all['Date'].max()}\n"
+                f"データ日付: {df_all['Date'].max().strftime('%Y-%m-%d')}\n"
                 "```\n"
                 f"{res_df.to_string(index=False)}\n"
                 "```"
             )
         else:
-            msg = f"✅ {df_all['Date'].max()} : 条件に合致する「売られすぎ小型株」はありませんでした。"
+            msg = f"✅ {df_all['Date'].max().strftime('%Y-%m-%d')} : 条件に合致する銘柄はありませんでした。"
 
         send_discord_notify(msg)
-        print("✅ 通知完了")
+        print("✅ 完了")
 
     except Exception as e:
-        send_discord_notify(f"⚠️ エラー発生:\n{str(e)}")
+        error_details = str(e)
+        print(f"❌ エラー発生: {error_details}")
+        send_discord_notify(f"⚠️ エラー発生:\n```\n{error_details}\n```")
         exit(1)
 
 if __name__ == "__main__":
