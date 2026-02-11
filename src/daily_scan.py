@@ -41,7 +41,7 @@ def main():
         
         # パス設定
         quotes_path = f"s3://{BUCKET_NAME}/raw/daily_quotes/**/*.parquet"
-        master_path = f"s3://{BUCKET_NAME}/raw/equities_master/*.parquet"
+        master_path = f"s3://{BUCKET_NAME}/raw/equities_master/**/*.parquet"
 
         # DuckDBで時価総額を計算しつつデータを抽出
         # 時価総額 = 終値(C) * 発行済株式数(IssuedShares)
