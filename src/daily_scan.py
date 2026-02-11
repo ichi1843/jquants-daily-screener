@@ -20,7 +20,7 @@ def send_discord_notify(message):
     requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
 
 def main():
-    print("🚀 スクリーニング開始（メモリ最適化版）")
+    print("🚀 スクリーニング開始（カラム名修正版）")
 
     con = duckdb.connect(database=':memory:')
     con.execute("INSTALL httpfs; LOAD httpfs;")
@@ -34,23 +34,21 @@ def main():
     """)
 
     try:
-        # 1. 最新の銘柄マスタファイルを1つだけ特定する（重複防止）
+        # 1. 最新の銘柄マスタファイルを1つだけ特定
+        # 修正ポイント: name ではなく file を使用
         print("🔍 最新の銘柄マスタを探索中...")
-        master_files = con.sql(f"SELECT name FROM glob('s3://{BUCKET_NAME}/raw/equities_master/**/*.parquet') ORDER BY name DESC LIMIT 1").df()
+        master_files = con.sql(f"SELECT file FROM glob('s3://{BUCKET_NAME}/raw/equities_master/**/*.parquet') ORDER BY file DESC LIMIT 1").df()
         
         if master_files.empty:
-            raise Exception("銘柄マスタファイルが見つかりません。")
+            raise Exception("銘柄マスタファイルが見つかりません。パスを確認してください。")
         
-        latest_master_path = master_files.iloc[0]['name']
+        latest_master_path = master_files.iloc[0]['file']
         print(f"📍 使用するマスタ: {latest_master_path}")
 
-        # 2. 直近40日分の株価だけを読み込む（メモリ節約）
+        # 2. データの取得
         print("📥 株価データを読み込み中...")
         quotes_path = f"s3://{BUCKET_NAME}/raw/daily_quotes/**/*.parquet"
 
-        # SQLの修正ポイント:
-        # - IssuedShares が文字列として保存されている可能性があるため CAST する
-        # - master を最新の1ファイルに固定して結合
         df_all = con.sql(f"""
             SELECT 
                 CAST(q.Date AS DATE) as Date, 
@@ -65,7 +63,7 @@ def main():
         """).df()
 
         if df_all.empty:
-            send_discord_notify("✅ 条件に合うデータがR2内にありませんでした。")
+            send_discord_notify("✅ 条件に合うデータ（直近40日以内）がありませんでした。")
             return
 
         print(f"🔍 分析対象：{df_all['Code'].nunique()} 銘柄")
@@ -83,7 +81,7 @@ def main():
             latest_mcap = group['MarketCap'].iloc[-1]
             latest_name = str(group['CompanyName'].iloc[-1]) if group['CompanyName'].iloc[-1] else str(code)
             
-            # 条件判定
+            # 条件判定: 時価総額300億以下 かつ RSI30以下
             if latest_mcap <= 30000000000 and latest_rsi <= 30:
                 result_list.append({
                     "Code": code,
