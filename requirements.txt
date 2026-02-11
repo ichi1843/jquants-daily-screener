@@ -2,3 +2,4 @@ pandas
 duckdb
 fsspec
 requests
+pandas_ta
