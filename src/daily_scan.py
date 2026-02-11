@@ -20,7 +20,7 @@ def send_discord_notify(message):
     requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
 
 def main():
-    print("🚀 スクリーニング開始（カラム名 CoName 修正版）")
+    print("🚀 スクリーニング開始（V2カラム名 IS 修正版）")
 
     con = duckdb.connect(database=':memory:')
     con.execute("INSTALL httpfs; LOAD httpfs;")
@@ -48,14 +48,14 @@ def main():
         print("📥 株価データを読み込み中...")
         quotes_path = f"s3://{BUCKET_NAME}/raw/daily_quotes/**/*.parquet"
 
-        # SQL修正箇所: m.CoName AS CompanyName とすることで以降の処理を維持
+        # SQL修正箇所: m.IssuedShares -> m.IS (V2仕様)
         df_all = con.sql(f"""
             SELECT 
                 CAST(q.Date AS DATE) as Date, 
                 q.Code, 
                 q.C,
                 m.CoName AS CompanyName,
-                (q.C * CAST(m.IssuedShares AS DOUBLE)) as MarketCap
+                (q.C * CAST(m.IS AS DOUBLE)) as MarketCap
             FROM read_parquet('{quotes_path}') q
             INNER JOIN read_parquet('{latest_master_path}') m ON q.Code = m.Code
             WHERE CAST(q.Date AS DATE) >= (CURRENT_DATE - INTERVAL 40 DAY)
