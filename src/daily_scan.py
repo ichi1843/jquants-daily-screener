@@ -49,7 +49,7 @@ def main():
         
         # R2上のParquetファイルをスキャン
         # ※ファイルが大量にある場合は 'daily_quotes/2026/*.parquet' のように絞ると高速です
-        target_path = f"s3://{BUCKET_NAME}/daily_quotes/**/*.parquet"
+        target_path = f"s3://{BUCKET_NAME}/raw/daily_quotes/**/*.parquet"
         
         # データを取得（最新の5件をサンプルとして取得）
         # J-Quants V2のカラム名（Date, Code, Cなど）に合わせています
