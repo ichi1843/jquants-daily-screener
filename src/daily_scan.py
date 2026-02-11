@@ -20,7 +20,7 @@ def send_discord_notify(message):
     requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
 
 def main():
-    print("🚀 スクリーニング開始（カラム名修正版）")
+    print("🚀 スクリーニング開始（カラム名 CoName 修正版）")
 
     con = duckdb.connect(database=':memory:')
     con.execute("INSTALL httpfs; LOAD httpfs;")
@@ -35,12 +35,11 @@ def main():
 
     try:
         # 1. 最新の銘柄マスタファイルを1つだけ特定
-        # 修正ポイント: name ではなく file を使用
         print("🔍 最新の銘柄マスタを探索中...")
         master_files = con.sql(f"SELECT file FROM glob('s3://{BUCKET_NAME}/raw/equities_master/**/*.parquet') ORDER BY file DESC LIMIT 1").df()
         
         if master_files.empty:
-            raise Exception("銘柄マスタファイルが見つかりません。パスを確認してください。")
+            raise Exception("銘柄マスタファイルが見つかりません。")
         
         latest_master_path = master_files.iloc[0]['file']
         print(f"📍 使用するマスタ: {latest_master_path}")
@@ -49,12 +48,13 @@ def main():
         print("📥 株価データを読み込み中...")
         quotes_path = f"s3://{BUCKET_NAME}/raw/daily_quotes/**/*.parquet"
 
+        # SQL修正箇所: m.CoName AS CompanyName とすることで以降の処理を維持
         df_all = con.sql(f"""
             SELECT 
                 CAST(q.Date AS DATE) as Date, 
                 q.Code, 
                 q.C,
-                m.CompanyName,
+                m.CoName AS CompanyName,
                 (q.C * CAST(m.IssuedShares AS DOUBLE)) as MarketCap
             FROM read_parquet('{quotes_path}') q
             INNER JOIN read_parquet('{latest_master_path}') m ON q.Code = m.Code
